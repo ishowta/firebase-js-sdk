@@ -17,6 +17,7 @@
 
 import { debugAssert, debugCast } from '../util/assert';
 import { wrapInUserErrorIfRecoverable } from '../util/async_queue';
+import { ByteString } from '../util/byte_string';
 import { FirestoreError } from '../util/error';
 import { EventHandler } from '../util/misc';
 import { ObjectMap } from '../util/obj_map';
@@ -52,8 +53,10 @@ export interface Observer<T> {
  * allows users to tree-shake the Watch logic.
  */
 export interface EventManager {
-  onListen?: (query: Query) => Promise<ViewSnapshot>;
-  onUnlisten?: (query: Query) => Promise<void>;
+  onListen?: (query: Query, resumeToken?: ByteString) => Promise<ViewSnapshot>;
+  onUnlisten?: (
+    query: Query
+  ) => Promise<{ resumeToken: ByteString } | undefined>;
 }
 
 export function newEventManager(): EventManager {
@@ -71,9 +74,11 @@ export class EventManagerImpl implements EventManager {
   snapshotsInSyncListeners: Set<Observer<void>> = new Set();
 
   /** Callback invoked when a Query is first listen to. */
-  onListen?: (query: Query) => Promise<ViewSnapshot>;
+  onListen?: (query: Query, resumeToken?: ByteString) => Promise<ViewSnapshot>;
   /** Callback invoked once all listeners to a Query are removed. */
-  onUnlisten?: (query: Query) => Promise<void>;
+  onUnlisten?: (
+    query: Query
+  ) => Promise<{ resumeToken: ByteString } | undefined>;
 }
 
 export async function eventManagerListen(
@@ -92,17 +97,25 @@ export async function eventManagerListen(
     queryInfo = new QueryListenersInfo();
   }
 
-  if (firstListen) {
-    try {
-      queryInfo.viewSnap = await eventManagerImpl.onListen(query);
-    } catch (e) {
-      const firestoreError = wrapInUserErrorIfRecoverable(
-        e as Error,
-        `Initialization of query '${stringifyQuery(listener.query)}' failed`
-      );
-      listener.onError(firestoreError);
-      return;
-    }
+  let previousTarget: { resumeToken: ByteString } | undefined = undefined;
+  if (!firstListen) {
+    // unlisten and listen for keep strong consistency
+    debugAssert(!!eventManagerImpl.onUnlisten, 'onUnlisten not set');
+    previousTarget = await eventManagerImpl.onUnlisten(query);
+  }
+
+  try {
+    queryInfo.viewSnap = await eventManagerImpl.onListen(
+      query,
+      previousTarget?.resumeToken
+    );
+  } catch (e) {
+    const firestoreError = wrapInUserErrorIfRecoverable(
+      e as Error,
+      `Initialization of query '${stringifyQuery(listener.query)}' failed`
+    );
+    listener.onError(firestoreError);
+    return;
   }
 
   eventManagerImpl.queries.set(query, queryInfo);
@@ -146,7 +159,7 @@ export async function eventManagerUnlisten(
 
   if (lastListen) {
     eventManagerImpl.queries.delete(query);
-    return eventManagerImpl.onUnlisten(query);
+    await eventManagerImpl.onUnlisten(query);
   }
 }
 

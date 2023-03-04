@@ -39,7 +39,7 @@ describe('client', () => {
     app = getFakeApp();
     fetchStub = stub(window, 'fetch').returns(
       Promise.resolve(new Response('{}'))
-    );
+    ) as any;
   });
 
   it('creates exchange recaptcha token request correctly', () => {

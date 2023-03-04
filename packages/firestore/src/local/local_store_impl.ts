@@ -931,7 +931,8 @@ export function localStoreReadDocument(
  */
 export function localStoreAllocateTarget(
   localStore: LocalStore,
-  target: Target
+  target: Target,
+  resumeToken?: ByteString
 ): Promise<TargetData> {
   const localStoreImpl = debugCast(localStore, LocalStoreImpl);
   return localStoreImpl.persistence
@@ -954,7 +955,10 @@ export function localStoreAllocateTarget(
                   target,
                   targetId,
                   TargetPurpose.Listen,
-                  txn.currentSequenceNumber
+                  txn.currentSequenceNumber,
+                  undefined,
+                  undefined,
+                  resumeToken
                 );
                 return localStoreImpl.targetCache
                   .addTargetData(txn, targetData)

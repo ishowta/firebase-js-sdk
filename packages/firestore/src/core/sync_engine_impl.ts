@@ -208,6 +208,7 @@ class SyncEngineImpl implements SyncEngine {
     q => canonifyQuery(q),
     queryEquals
   );
+  targets = new Map<TargetId, { resumeToken: ByteString }>();
   queriesByTarget = new Map<TargetId, Query[]>();
   /**
    * The keys of documents that are in limbo for which we haven't yet started a
@@ -293,7 +294,8 @@ export function newSyncEngine(
  */
 export async function syncEngineListen(
   syncEngine: SyncEngine,
-  query: Query
+  query: Query,
+  resumeToken?: ByteString
 ): Promise<ViewSnapshot> {
   const syncEngineImpl = ensureWatchCallbacks(syncEngine);
 
@@ -314,7 +316,8 @@ export async function syncEngineListen(
   } else {
     const targetData = await localStoreAllocateTarget(
       syncEngineImpl.localStore,
-      queryToTarget(query)
+      queryToTarget(query),
+      resumeToken
     );
     if (syncEngineImpl.isPrimaryClient) {
       remoteStoreListen(syncEngineImpl.remoteStore, targetData);
@@ -384,6 +387,7 @@ async function initializeViewAndComputeSnapshot(
   if (syncEngineImpl.queriesByTarget.has(targetId)) {
     syncEngineImpl.queriesByTarget.get(targetId)!.push(query);
   } else {
+    syncEngineImpl.targets.set(targetId, { resumeToken });
     syncEngineImpl.queriesByTarget.set(targetId, [query]);
   }
 
@@ -394,7 +398,12 @@ async function initializeViewAndComputeSnapshot(
 export async function syncEngineUnlisten(
   syncEngine: SyncEngine,
   query: Query
-): Promise<void> {
+): Promise<
+  | {
+      resumeToken: ByteString;
+    }
+  | undefined
+> {
   const syncEngineImpl = debugCast(syncEngine, SyncEngineImpl);
   const queryView = syncEngineImpl.queryViewsByQuery.get(query)!;
   debugAssert(
@@ -406,6 +415,7 @@ export async function syncEngineUnlisten(
   // to the target.
   const queries = syncEngineImpl.queriesByTarget.get(queryView.targetId)!;
   if (queries.length > 1) {
+    console.error('Unexptected, multi query detected', queries);
     syncEngineImpl.queriesByTarget.set(
       queryView.targetId,
       queries.filter(q => !queryEquals(q, query))
@@ -423,6 +433,7 @@ export async function syncEngineUnlisten(
       syncEngineImpl.sharedClientState.isActiveQueryTarget(queryView.targetId);
 
     if (!targetRemainsActive) {
+      const currentTarget = syncEngineImpl.targets.get(queryView.targetId);
       await localStoreReleaseTarget(
         syncEngineImpl.localStore,
         queryView.targetId,
@@ -434,6 +445,8 @@ export async function syncEngineUnlisten(
           removeAndCleanupTarget(syncEngineImpl, queryView.targetId);
         })
         .catch(ignoreIfPrimaryLeaseLoss);
+
+      return currentTarget;
     }
   } else {
     removeAndCleanupTarget(syncEngineImpl, queryView.targetId);
@@ -866,6 +879,7 @@ function removeAndCleanupTarget(
     }
   }
 
+  syncEngineImpl.targets.delete(targetId);
   syncEngineImpl.queriesByTarget.delete(targetId);
 
   if (syncEngineImpl.isPrimaryClient) {
